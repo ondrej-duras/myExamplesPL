@@ -5,7 +5,7 @@
 
 ## MANUAL ############################################################# {{{ 1
 
-our $VERSION=2019.110501;
+our $VERSION=2019.110502;
 our $MANUAL = <<__MANUAL__;
 NAME: CHECK-ROUTING
 FILE: c2-check-routing.pl
@@ -345,9 +345,21 @@ sub cmd_save($$$) {
 sub out_config() {
   # Head and config
   my $TOUTPUT;
-  foreach my $LINE (@$MODE_SCRIPT) {
+ 
+  $TOUTPUT .= "#=routing script ${FNAME_OUTPUT}\n";
+  $TOUTPUT .= "#=routing label ${TEXT_LABEL}\n";
+  foreach my $LINE (@$AFOREIGN) {
+    $TOUTPUT .= "#=routing foreign ${LINE}\n";
+  }
+  foreach my $LINE (@$ADEVICE) {
     $TOUTPUT .= "#=routing ${LINE}\n";
   }
+  foreach my $LINE (@$ALOCAL) {
+    $TOUTPUT .= "#=routing local ${LINE}\n";
+  }
+  $TOUTPUT .= "#=routing make\n";
+  $TOUTPUT .= "#=routing save\n";
+
   return $TOUTPUT;
 }
 
