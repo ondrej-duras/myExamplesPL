@@ -34,7 +34,7 @@
 #
 # METHODS:
 # Methods are equal to REALMs used in HTTP/S authentication within the Web World.
-# ...previously. But Today the main function of METHOD is to distigush,
+# ...previously. But Today the main function of METHOD is to distiguish
 # between interactively used credentials and cron-based credentials.
 # So usual METHOD values are ssh,telnet,http,snmp for interactive or cron for non-interactive.
 # Interactive credentials should not stolen from user logged into terminal,
@@ -47,14 +47,14 @@
 # It's very simplified implementation
 # without any security features.
 # If you intend some level of security, then 
-# clone, modify use PWA_B variant of PWA library.
+# clone, modify, compile and use PWA_B variant of PWA library.
 #
 # SEE LASO:
 # https://github.com/ondrej-duras/
 #
 # $|=1; # perldoc perlvar that explains
 # select( (select(OUT), $| = 1)[0] );
-# tested on Perl 5.8.4 / solaris
+# tested also on Perl 5.8.4 / sun4u/sparc
 # package PWA; # uncomment this and comment following 
 package PWA_A; # if necessary
 
