@@ -45,6 +45,10 @@ print " a: " . join(",", grep(  /a/, @B)) ."\n";
 print "!a: " . join(",", grep( !/a/, @B)) ."\n";
 print "<5: " . join(",", grep { length($_) < 5 } @B) ."\n";
 
+# Pythonovske if "aaaa" in dir_a:
+@A=qw(hhhh oooo hhhh eeee aaaa bbbb cccc dddd);
+if(grep( { $_ eq "aaaa" } @A)) { print "aaaa Nasli\n"; }
+if(grep( { $_ eq "xxxx" } @A)) { print "xxxx Nasli\n"; }
 
 $T = "##! HOST=D-HOST-001 DEVIP=1.2.3.4 HNAME=H-HOST-002";
 @POLE = map { $A=$_; $A =~ s/^[A-Z]+=//; $A} split(/\s+/,$T,5);
@@ -75,6 +79,7 @@ print substr($S,-8) ."\n";     # poslednych 8 znakov
 print index($S,"abcd") . "\n"; # vrati 9
 print index($S,"ABCD") . "\n"; # vrati polohu 18
 print index($S,"qxyz") . "\n"; # vrati -1, lebo sa tam retazec nenachadza
+
 
 # --- end ---
 
