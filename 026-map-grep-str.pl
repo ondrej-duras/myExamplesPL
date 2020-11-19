@@ -75,6 +75,3 @@ print index($S,"qxyz") . "\n"; # vrati -1, lebo sa tam retazec nenachadza
 
 # --- end ---
 
-
-
-# --- end ---
