@@ -41,6 +41,9 @@ print %C;
 splice @A,2,3; # zmaze 12 57 925
 print join(",",sort { $a <=> $b } @A) ."\n";
 print join(",",sort { $a cmp $b } @B) ."\n";
+print " a: " . join(",", grep(  /a/, @B)) ."\n";
+print "!a: " . join(",", grep( !/a/, @B)) ."\n";
+print "<5: " . join(",", grep { length($_) < 5 } @B) ."\n";
 
 
 $T = "##! HOST=D-HOST-001 DEVIP=1.2.3.4 HNAME=H-HOST-002";
