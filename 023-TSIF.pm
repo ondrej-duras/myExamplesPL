@@ -5,7 +5,7 @@ package TSIF;
 ## MANUAL ############################################################# {{{ 1
 
 
-our $VERSION = 2020.112401;
+our $VERSION = 2020.112501;
 our $MANUAL  = <<__MANUAL__;
 NAME: SSH / TSIF Hello variant _A
 FILE: TSIF.pm
@@ -36,6 +36,7 @@ our @EXPORT = qw(
 
   xresolve
   singleLinedConfig
+  save2File
   sshExec
   rawList2Cmd
   raw2Csv
@@ -150,6 +151,15 @@ sub singleLinedConfig($) {
     $OUTPUT .= join(";",@STACK_T) ."\n";
   }
   return $OUTPUT;
+}
+
+sub save2File($$) {
+  my ($FNAME,$DATA) = @_;
+  open(my $fh,">",$FNAME) or die "#! No File '${FNAME}' created !\n";
+  print $fh $DATA;
+  close $fh;
+  print "#+ File '${FNAME}' written.\n";
+
 }
 
 
