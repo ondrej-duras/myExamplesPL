@@ -17,7 +17,7 @@ sub pad($) {
   return (length($PAD),$TEXT);
 } 
 
-sub oneLineConfig($) {
+sub singleLinedConfig($) {
   my $CONFIG  = shift;
   my @STACK_L = (); # Lines
   my @STACK_P = (); # Padding
@@ -43,7 +43,7 @@ sub oneLineConfig($) {
   return $OUTPUT;
 }
 
-print oneLineConfig(join("",<STDIN>));
+print singleLinedConfig(join("",<STDIN>));
 
 # --- end ---
 
