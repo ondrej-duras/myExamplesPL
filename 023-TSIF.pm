@@ -5,7 +5,7 @@ package TSIF;
 ## MANUAL ############################################################# {{{ 1
 
 
-our $VERSION = 2020.112501;
+our $VERSION = 2020.112503;
 our $MANUAL  = <<__MANUAL__;
 NAME: SSH / TSIF Hello variant _A
 FILE: TSIF.pm
@@ -34,9 +34,18 @@ our @EXPORT = qw(
   $VERSION
   $MANUAL
 
+  pwaCred
+  pwaMethod
+  pwaLogin
+  pwaPassword
+
   xresolve
+
   singleLinedConfig
   save2File
+  loadFile
+  sortText
+
   sshExec
   rawList2Cmd
   raw2Csv
@@ -141,17 +150,20 @@ sub singleLinedConfig($) {
     while($FFLAG) {
       unless($STACK_C) { $FFLAG=0; last; }
       unless( $PAD > $STACK_P[-1]) {
-        pop @STACK_P; pop @STACK_T; $STACK_C--;
+        pop @STACK_P; pop @STACK_L; $STACK_C--;
         $FFLAG=1; next;
       }
       $FFLAG = 0;
     }
-    push @STACK_P,$PAD; push @STACK_T,$TEXT; $STACK_C++;
-    #print join(";",@STACK_T) ."\n";
-    $OUTPUT .= join(";",@STACK_T) ."\n";
+    push @STACK_P,$PAD; push @STACK_L,$TEXT; $STACK_C++;
+    #print join(";",@STACK_L) ."\n";
+    $OUTPUT .= join(";",@STACK_L) ."\n";
   }
   return $OUTPUT;
 }
+
+####################################################################### }}} 1
+## sub save2File loadFile sortText #################################### {{{ 1
 
 sub save2File($$) {
   my ($FNAME,$DATA) = @_;
@@ -160,6 +172,25 @@ sub save2File($$) {
   close $fh;
   print "#+ File '${FNAME}' written.\n";
 
+}
+
+sub loadFile($) {
+  my $FNAME = shift;
+  my $TIME = time();
+  open(my $fh,"<",$FNAME) or die "#! None File '${FNAME}' found !\n";
+  my @DATA=<$fh>;
+  close $fh;
+  my $DATA_CT = scalar @DATA;
+  $DATA = join("",@DATA);
+  my $DATA_SZ = length $DATA;
+  $TIME = time() - $TIME;
+  print "#: File '${FNAME}' Loaded. Lines=${DATA_CT} Bytes=${DATA_SZ} Time=${TIME} sec\n";
+  return $DATA;
+}
+
+sub sortText($) {
+  my $TEXT = shift;
+  return join("\n",sort split("\n",$TEXT)) . "\n";
 }
 
 
