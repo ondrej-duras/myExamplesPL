@@ -5,7 +5,7 @@ package TSIF;
 ## MANUAL ############################################################# {{{ 1
 
 
-our $VERSION = 2020.112503;
+our $VERSION = 2021.021601;
 our $MANUAL  = <<__MANUAL__;
 NAME: SSH / TSIF Hello variant _A
 FILE: TSIF.pm
@@ -41,12 +41,14 @@ our @EXPORT = qw(
 
   xresolve
 
+  oneLine
   singleLinedConfig
   save2File
   loadFile
   sortText
 
   sshExec
+  sshExecCisco
   rawList2Cmd
   raw2Csv
   raw2Instant
@@ -55,15 +57,40 @@ our @EXPORT = qw(
   raw4Default
   raw4Empty  
 
+  nowhite
+  portSort
+  loadHostList
+  dev2Instant
+  alldev2Instant
   
   $CLASS_MARKER
   $CLASS_PREFIX
   $HOST_PREFIX
+
+  $RL_LIST
+  $RL_NXOS_TAB
+  $RL_NXOS_TOPO
+  $RL_C3750_TOPO
+
+  $TSIF_BASE
 );
 
 our $CLASS_MARKER = "##!exit logout :CLASS_ID:";
 our $CLASS_PREFIX = "##! CLASS_ID=";
 our  $HOST_PREFIX = "##! HOST=";
+
+our $HOSTLIST     = ""; # List of fully qualified / discovered network devices (example bellow)
+our $IF_DATA   = {}; # interface name => interface attribute class => interface data ...big structure
+our $TSIF_BASE = {}; # RAW_CLASS => sub($$$$$) { data line handling procedure ... }, ... used by raw2Instant() function
+
+# used by $TSIF_BASE subRoutines
+our $ACTROUTE = ""; # ip route network
+our $ACTVRF   = ""; # ip route vrf
+our $ACTIF    = ""; # vrrp interface
+our $ACTSTATE = ""; # vrrp status Active/Backup
+our $ACTVIP   = ""; # vrrp Virtual IP
+our $ACTPRIO  = ""; # vrrp priority
+our $ACTACTIV = ""; # vrrp master
 
 
 ####################################################################### }}} 1
@@ -107,7 +134,7 @@ sub xresolve($;$) {
 }
 
 ####################################################################### }}} 1
-## sub singleLinedConfig ############################################## {{{ 1
+## sub oneLine / singleLinedConfig #################################### {{{ 1
 
 =pod
 DECLARATION:
@@ -133,7 +160,7 @@ DESCRIPTION:
  But the conf.line "vlan 111; name XXX_YYY" is position independent.
 =cut
 
-sub singleLinedConfig($) {
+sub oneLine($) {
   my $CONFIG  = shift;
   my @STACK_L = (); # Lines
   my @STACK_P = (); # Padding
@@ -161,6 +188,46 @@ sub singleLinedConfig($) {
   }
   return $OUTPUT;
 }
+
+sub singleLinedConfig($) {
+  return oneLine(shift);
+}
+####################################################################### }}} 1
+## sub multiLine ###################################################### {{{ 1
+
+=pod
+DECLARATION:
+  MULTILENED_TXT=multiLine($ONELINED;$SHIFT);
+
+DESCRIPTION:
+  it's reverse function to oneLine.
+=cut
+
+sub multiLine($;$) {
+  my ($INPUT,$SHIFT)  = @_;  # string of input text
+  my $OUTPUT = "";    # string of output/returned string
+  my $LAST   = "";      # previous/last parsed line
+  my $LINE   = "";
+  unless($SHIFT) { $SHIFT  = " "; }  # increment of indentation
+  foreach $LINE (split(/\n/,$INPUT)) {
+    if($LINE =~/^#/) { $OUTPUT .= "${LINE}\n"; next; }
+    my @ALAST = split(/;/,$LAST); $LAST = $LINE;
+    my @ALINE = split(/;/,$LINE);
+    my $EXTRA = 0;
+    my $INDENT= "";    # indent ... spaces of indentation / for whole level of recursion
+    my ($ILAST,$ILINE);
+
+    while($ILINE = shift @ALINE) {
+      if(scalar(@ALAST)) {  $ILAST = shift @ALAST; }
+      else { $EXTRA = 1; $ILAST = ""; }
+      if ( ($EXTRA == 0 ) and ($ILINE eq $ILAST )) {  $INDENT .= $SHIFT; next; }
+      $EXTRA = 1;
+      $OUTPUT .= "${INDENT}${ILINE}\n"; $INDENT .= $SHIFT;
+    }
+  }
+  return $OUTPUT;
+}
+
 
 ####################################################################### }}} 1
 ## sub save2File loadFile sortText #################################### {{{ 1
@@ -195,7 +262,7 @@ sub sortText($) {
 
 
 ####################################################################### }}} 1
-## sub sshExec ######################################################## {{{ 1
+## sub sshExec / sshExecCisco ######################################### {{{ 1
 
 sub sshExec($$$;$) {
   my($HOST,$CRED,$COMMAND,$PROMPT)=@_;
@@ -278,6 +345,13 @@ sub sshExec($$$;$) {
   return "${HOST_PREFIX}${HOST} DEVIP=${DEVIP} HNAME=${HNAME}\n" . join("",@OUTA,@OUTE);
 }
 
+# sshExec for one command on Cisco devices
+sub sshExecCisco($$$;$) {
+  my($HOST,$CRED,$COMMAND,$PROMPT)=@_;
+  $COMMAND = "terminal length 0\n" . $COMMAND . "\nexit\nexit\n";
+  return sshExec($HOST,$CRED,$COMMAND,$PROMPT);
+}
+
 ####################################################################### }}} 1
 ## sub rawList2Cmd #################################################### {{{ 1
 
@@ -337,7 +411,7 @@ sub raw2Csv($;$) {
   my ($HOST,$DEVIP,$HNAME) = ("","","");
   my $CLASS = "CUT_HEAD";
   my $FFLAG = 0;
-  my $CLASS = "";
+  #my $CLASS = "";
   my $OUTPUT_TEXT = "";
 
   #print $INPUT_TEXT; # DEBUG
@@ -390,7 +464,7 @@ sub raw2Instant($$;$) {
   my ($HOST,$DEVIP,$HNAME) = ("","","");
   my $CLASS = "CUT_HEAD";
   my $FFLAG = 0;
-  my $CLASS = "";
+  #my $CLASS = "";
   my $METHOD = sub {};
   my $OUTPUT_TEXT = "";
   my $DEFAULT_METHOD = \&raw4Default;
@@ -432,6 +506,410 @@ sub raw2Instant($$;$) {
   return $OUTPUT_TEXT;
   
 }
+
+####################################################################### }}} 1
+
+## $RL_LISTs - RAW Lists - Command Sets for platforms ################# {{{ 1
+
+our $RL_LIST = {
+ "nxos" => \$RL_NX9K,
+ "c3750" => \$RL_C3750
+};
+
+our $RL_NXOS_TAB = <<__RAWLIST__;
+RAW_NX9K_VLAN; show vlan brief | include ^[0-9]
+RAW_NX9K_IFSTAT; show int status | include "^(Po|Vl)"
+CUT_CLEARLINE; show clock
+RAW_NX9K_ROUTES; show ip route vrf all
+CUT_CLEARLINE; show clock
+RAW_NX9K_IPv6ROUTE; show ipv6 route vrf all
+RAW_NX9K_VRRP; show vrrp detail
+RAW_NX9K_HSRP; show hsrp brief
+__RAWLIST__
+
+our $RL_NXOS_TOPO = <<__RAW__;
+##!cisco
+RAW_NX9K_VLAN_DESC; show vlan brief | include ^[0-9]
+OPT_CLEAR_IF_DATA;  show clock
+RAW_NX9K_H_STATUS;  show int status | include ^(Eth|Po[0-9]|Vl|Lo|mgmt)
+RAW_NX9K_H_DESC;    show int description | include ^(Eth|Po[0-9]|Vl|Lo|mgmt)
+OPT_FEED_IF_DESC;   show clock
+OPT_CLEAR_IF_DATA;  show clock
+RAW_NX9K_H_NATIVE;  show int trunk | begin "Native" | end "Vlans Allowed" | include "^(Eth|Po[0-9])"
+RAW_NX9K_H_TRUNK;   show int trunk | begin "Vlans Allowed" | end "Err-disabled" | include "^(Eth|Po[0-9])"
+OPT_FEED_IF_TRUNK;  show clock
+__RAW__
+
+our $RL_C3750_TOPO = <<__RAW__;
+##!cisco
+RAW_C3750_VLAN_DESC; show vlan brief | include ^[0-9]
+OPT_CLEAR_IF_DATA;   show clock
+RAW_C3750_H_STATUS;  show int status | include ^(Gi|Fa|Te|Po[0-9]|Vl|Lo)
+RAW_C3750_H_DESC;    show int description | include ^(Gi|Fa|Te|Po[0-9]|Vl|Lo)
+OPT_FEED_IF_DESC;    show clock
+RAW_C3750_IF_TRUNK;  show int switchport
+__RAW__
+
+####################################################################### }}} 1
+## TSIF_BASE Support subRoutines ###################################### {{{ 1
+
+# Striping white spaces from both ends
+# of the single line string
+sub nowhite($) {
+  my $TEXT = shift;
+  if($TEXT eq undef) { return ""; }
+  $TEXT =~ s/^\s+//;
+  $TEXT =~ s/\s+$//;
+  return $TEXT;
+}
+
+# sorts interface names in proper order.
+# @E = qw( Eth1/1 Eth1/2 Eth1/101 Eth3/21 Eth1/22 Eth1/21 Eth1/45 Eth2/101);
+sub portSort($$) {
+  my ($a,$b) = @_;
+  my ($TA,$NA,$TB,$BN,$XX);
+  ($TA,$NA) = $a =~ /(.*[^0-9])([0-9]+)$/; # test,number part
+  ($TB,$NB) = $b =~ /(.*[^0-9])([0-9]+)$/;
+  # print "#: (${a} -> ${TA} ${NA}) (${b} -> ${TB} ${NB})\n"; # DEBUG
+  unless($XX=($TA cmp $TB)) { $XX=(int($NA) <=> int($NB)); }
+  return $XX;
+}
+
+
+sub raw_VLAN_DESC($$$$) {
+   my ($DEVIP,$HNAME,$CLASS,$LINE) = @_;
+   my($ID,$NAME,$STATE);
+   $CLASS="VLAN_DESC";
+   $ID   = substr($LINE, 0, 4); $ID   =~ s/\s+//g;
+   $NAME = substr($LINE, 5,32); $NAME =~ s/\s+//g;
+   $STATE= substr($LINE,38, 9); $STATE=~ s/\s+//g;
+   return "${DEVIP};${HNAME};${CLASS};${ID};${NAME};${STATE};-na-;-na-\n";
+}
+
+# our $HOSTLIST=<<__HOSTLIST__;
+# 10.39.1.101;D-005-BA-RS-50;HOST;ssh;user;nx9k
+# 10.39.1.102;D-005-BA-RS-51;HOST;ssh;user;nx9k
+# 10.39.1.103;D-101-BA-RS-60;HOST;ssh;user;nx9k
+# 10.39.1.104;D-101-BA-RS-61;HOST;ssh;user;nx9k
+# 10.39.2.97;D-005-BA-LW-97;HOST;ssh;user;c3750
+# 10.39.2.98;D-101-BA-LW-98;HOST;ssh;user;c3750
+# __HOSTLIST__
+
+# loads a HostList from file formated as an example above
+sub loadHostList($) {
+  my $FNAME = shift;
+  my $fh;
+  open($fh,"<",$FNAME) or die "#! None HOSTLIST.csv found !\n";
+  $HOSTLIST=join("",<$fh>);
+  close $fh;
+}
+
+sub dev2Instant($;$) {
+  my ($LINE,$fh)=@_;
+  unless($fh) { $fh=STDOUT; }
+  my($DEVIP,$HNAME,$CLASS,$PROTO,$CRED,$TYPE)=split(/\s*;\s*/,$LINE,6);
+  my $RAW;
+  unless(exists($RL_LIST->{$TYPE})) { return "#! Warning: wrong device type: ${LINE}\n"; }
+  if($PROTO eq "ssh") {
+    my $ATIME = time;
+    my $RL = ${$RL_LIST->{$TYPE}};
+    # print $RL; # DEBUG
+    $RAW=sshExec($HNAME,$CRED,rawList2Cmd($RL));
+    my $BTIME = time;
+    my $TTIME = $BTIME - $ATIME;
+    if(length($RAW) < 1000) { return "#! Connection Failed ! (${TTIME})\n"; }
+    print $fh raw2Instant($RAW,$TSIF_BASE);
+    my $CTIME = time;
+    my $QTIME = $CTIME - $ATIME;
+    return " ..... ok. (${TTIME} $QTIME)\n";
+  }
+}
+
+sub alldev2Instant($$) {
+  my($INFILE,$OUTFILE)=@_;
+  unless(pwaLogin("user")) { die "#! . prepare.sh first !\n"; }
+  my $XTIME = time;
+  #loadHostList("HOSTLIST.csv");
+  loadHostList($INFILE);
+  open(my $fh_out,">",$OUTFILE) or die "#! No output created !\n";
+  foreach my $LINE (split(/\n/,$HOSTLIST)) {
+    next if $LINE =~ /^\s*$/;
+    next if $LINE =~ /^\s*#/;
+    print "${LINE}";
+    print ";" . dev2Instant($LINE,$fh_out);
+  }
+  close $fh_out;
+  my $YTIME = time;
+  my $ZTIME = $YTIME - $XTIME;
+  print "#+ done. (${ZTIME}sec)\n";
+}
+
+#$RAW = sshExec("D-005-BA-RS-50","user",rawList2Cmd($RL_NX9K));
+#$INSTANT = raw2Instant($RAW,$TSIF_BASE);
+
+#$RAW = sshExec("D-005-BA-LW-97","user",rawList2Cmd($RL_C3750));
+#$INSTANT .= raw2Instant($RAW,$TSIF_BASE);
+
+#print $RAW;
+#print "# ---\n";
+
+#$CSV = raw2Csv($RAW1);
+#print $CSV;
+#print "# ---\n";
+
+#print $INSTANT;
+#print "# ---\n";
+
+## Way to Collect status tables from Nexus
+#print "#: Collecting Status Tables from OLD '${OLDHNAME}' ...\n";
+#unless(pwaPassword($OLDCRED)) { die "#! '${OLDCRED}' credentials first !\n"; }
+#our $RAW = sshExec($OLDHNAME,$OLDCRED,rawList2Cmd($RL_NXOS_TAB));
+#our $INS = raw2Instant($RAW,$TSIF_BASE);
+#save2File("d15-TABLES-OLD-${OLDHNAME}.csv",$INS);
+
+
+
+####################################################################### }}} 1
+## $TSIF_BASE definition ############################################## {{{ 1
+
+our $IF_DATA={};
+our $TSIF_BASE = {
+"CUT_CLEARLINE" => sub {
+  my($DEVIP,$HNAME,$CLASS,$LINE) = @_;
+  $ACTROUTE = "";
+  $ACTVRF   = "";
+
+},
+"RAW_NX9K_ROUTES" => sub {
+  my($DEVIP,$HNAME,$CLASS,$LINE) = @_;
+  if($LINE =~ /^'/) { return ""; }
+  if($LINE =~ /^IP Route Table for VRF "/) {
+    $ACTVRF = $LINE; $ACTVRF =~ s/^.* "//; $ACTVRF =~ s/"$//;
+  }
+  if($LINE =~ /^[0-9]+(\.[0-9]+){3}\/[0-9]+/) {
+    $ACTROUTE = $LINE; return "";
+  }
+  if($LINE =~ /^\s+\*via/) {
+    my $OUT = "${ACTROUTE} ${LINE}";
+    $OUT =~ s/,/;/g;
+    $OUT =~ s/\s+/ /g;
+    $OUT =~ s/\]; [0-9a-z:]+;/\];;/;
+    return "${DEVIP};${HNAME};NET_ROUTE;${ACTVRF};${OUT}\n";
+  }
+  return "";
+},
+"RAW_NX9K_IPv6ROUTE" => sub {
+  my($DEVIP,$HNAME,$CLASS,$LINE) = @_;
+  if($LINE =~ /^'/) { return ""; }
+  if($LINE =~ /^IPv6 Routing Table for VRF "/) {
+    $ACTVRF = $LINE; $ACTVRF =~ s/^.* "//; $ACTVRF =~ s/"$//;
+  }
+  if($LINE =~ /^[0-9a-f]+(:[0-9a-f]*)+/) {
+    $ACTROUTE = $LINE; return "";
+  }
+  if($LINE =~ /^\s+\*via/) {
+    my $OUT = "${ACTROUTE} ${LINE}";
+    $OUT =~ s/,/;/g;
+    $OUT =~ s/\s+/ /g;
+    $OUT =~ s/\]; [0-9a-z:]+;/\];;/;
+    return "${DEVIP};${HNAME};NET_IPv6ROUTE;${ACTVRF};${OUT}\n";
+  }
+  return "";
+},
+"RAW_NX9K_IFSTAT" => sub {
+  my($DEVIP,$HNAME,$CLASS,$LINE) = @_;
+  my($IF,$NAME,$STATUS,$WASTE) = split(/\s+/,$LINE,4);
+  return "${DEVIP};${HNAME};NET_IFSTAT;${IF};${STATUS}\n";
+},
+"RAW_NX9K_VLAN" => sub {
+  my($DEVIP,$HNAME,$CLASS,$LINE) = @_;
+  my($ID,$NAME,$STATUS,$WASTE) = split(/\s+/,$LINE,4);
+  return "${DEVIP};${HNAME};NET_VLAN;${ID};${NAME};${STATUS}\n";
+},
+"RAW_NX9K_VRRP" => sub {
+  my($DEVIP,$HNAME,$CLASS,$LINE) = @_;
+  if($LINE =~/^(Vlan|port|Eth)/) {
+    $ACTIF = $LINE; $ACTIF =~ s/\s.*//;
+    return "";
+  }
+  if($LINE =~ /^\s*State is /) {
+    $ACTSTATE = $LINE; $ACTSTATE =~ s/^\s*State is //;
+    return "";
+  }
+  if($LINE =~ /Virtual IP/) {
+    $ACTIP = $LINE; $ACTIP =~ s/^.* is /vip:/;
+  }
+  if($LINE =~ /^\s*Priority/) {
+    $ACTPRIO = $LINE; $ACTPRIO =~ s/,.*//; $ACTPRIO =~ s/^\s*Priority /Prio:/;
+    return "";
+  }
+  if($LINE =~ /^\s*Master router is/) {
+    $ACTACTIV = $LINE; $ACTACTIV =~ s/^.*router is /master:/;
+    return "${DEVIP};${HNAME};IF_VRRP;${ACTIF};${ACTSTATE};vip:${ACTIP};Prio:${ACTPRIO};master:${ACTACTIV}\n";
+  }
+},
+"RAW_NX9K_HSRP" => sub {
+  my($DEVIP,$HNAME,$CLASS,$LINE) = @_;
+  $LINE =~s/^\s+//;
+  my($IF,$GRP,$ASTER,$PRIO,$PPP,$STATE,$ACTIVE,$STANDBY,$VIP,$WASTE) = split(/\s+/,$LINE,10);
+  return "${DEVIP};${HNAME};IF_HSRP;${IF};${STATE};${VIP};${PRIO};${ACTIVE}\n";
+},
+
+ "OPT_CLEAR_IF_DATA" => sub {
+   my($DEVIP,$HNAME,$CLASS,$LINE) = @_;
+   $IF_DATA = {};
+   return "";
+ },
+ "RAW_NX9K_H_STATUS" => sub {  # --------------
+   my($DEVIP,$HNAME,$CLASS,$LINE) = @_;
+   my($IF,$STATUS,$VLAN,$SPEED,$SFP);
+   my $PT;
+
+   $IF     = nowhite(substr($LINE,0,13)); # ^ -------------
+   $STATUS = nowhite(substr($LINE,33,9)); # ---------------------------------- ---------
+   $VLAN   = nowhite(substr($LINE,43,9)); # -------------------------------------------- ---------
+   $SPEED  = nowhite(substr($LINE,61,7)); # -------------------------------------------------------------- -------
+   $SFP    = nowhite(substr($LINE,69));   # ---------------------------------------------------------------------- $
+
+   unless(exists($IF_DATA->{$IF})) { $IF_DATA->{$IF}={}; }
+   $PT = $IF_DATA->{$IF};
+
+   $PT->{"STATUS"} = $STATUS;
+   $PT->{"VLAN"}   = $VLAN;
+   $PT->{"SPEED"}  = $SPEED;
+   $PT->{"SFP"}    = $SFP;
+   return "";
+ },
+ "RAW_C3750_H_STATUS" => sub {  # --------------
+   my($DEVIP,$HNAME,$CLASS,$LINE) = @_;
+   my($IF,$STATUS,$VLAN,$SPEED,$SFP);
+   my $PT;
+
+   $IF     = nowhite(substr($LINE,0,10));
+   $STATUS = nowhite(substr($LINE,29,12));
+   $VLAN   = nowhite(substr($LINE,42,8));
+   $SPEED  = nowhite(substr($LINE,60,6));
+   $SFP    = nowhite(substr($LINE,67));
+
+   unless(exists($IF_DATA->{$IF})) { $IF_DATA->{$IF}={}; }
+   $PT = $IF_DATA->{$IF};
+
+   $PT->{"STATUS"} = $STATUS;
+   $PT->{"VLAN"}   = $VLAN;
+   $PT->{"SPEED"}  = $SPEED;
+   $PT->{"SFP"}    = $SFP;
+   return "";
+ },
+ "RAW_NX9K_H_DESC" => sub {
+   my($DEVIP,$HNAME,$CLASS,$LINE) = @_;
+   my($IF,$DESC,$PT,$WASTE);
+
+   if($LINE =~ /^Eth[0-9]/) {
+     ($IF,$WASTE,$WASTE,$DESC) = split(/\s+/,$LINE,4);
+   } else {
+     ($IF,$DESC) = split(/\s+/,$LINE,2);
+   }
+   unless(exists($IF_DATA->{$IF})) { $IF_DATA->{$IF}={}; }
+   $IF_DATA->{$IF}->{"DESC"} = $DESC;
+   return "";
+
+ },
+ "RAW_C3750_H_DESC" => sub {
+   my($DEVIP,$HNAME,$CLASS,$LINE) = @_;
+   my($IF,$DESC,$PT,$WASTE);
+
+   ($IF,$WASTE) = split(/\s/,$LINE,2);
+   $DESC = substr($LINE,55);
+
+   unless(exists($IF_DATA->{$IF})) { $IF_DATA->{$IF}={}; }
+   $IF_DATA->{$IF}->{"DESC"} = $DESC;
+   return "";
+ },
+ "OPT_FEED_IF_DESC" => sub {
+   my($DEVIP,$HNAME,$CLASS,$LINE) = @_;
+   my($IF,$STATUS,$VLAN,$SPEED,$SFP,$DESC,$PT);
+   my $OUTPUT = "";
+   foreach $IF (sort portSort keys %$IF_DATA) {
+     $PT = $IF_DATA->{$IF};
+     $STATUS = nowhite($PT->{"STATUS"});
+     $VLAN   = nowhite($PT->{"VLAN"});
+     $SPEED  = nowhite($PT->{"SPEED"});
+     $SFP    = nowhite($PT->{"SFP"});
+     $DESC   = nowhite($PT->{"DESC"});
+     $OUTPUT .= "${DEVIP};${HNAME};IF_DESC;${IF};${STATUS};${VLAN};${SPEED};${SFP};${DESC}\n";
+   }
+   return $OUTPUT;
+ },
+ "RAW_C3750_VLAN_DESC" => \&raw_VLAN_DESC,
+ "RAW_NX9K_VLAN_DESC"  => \&raw_VLAN_DESC,
+ "RAW_NX9K_H_NATIVE" =>sub {
+   my($DEVIP,$HNAME,$CLASS,$LINE) = @_;
+   my($IF,$NATIVE,$WASTE) = split(/\s+/,$LINE,3);
+
+   unless(exists($IF_DATA->{$IF})) { $IF_DATA->{$IF}={}; }
+   $IF_DATA->{$IF}->{"NATIVE"} = $NATIVE;
+   return "";
+
+ },
+ "RAW_NX9K_H_TRUNK" => sub{
+   my($DEVIP,$HNAME,$CLASS,$LINE) = @_;
+   my ($IF,$VLANS);
+   our $TRUNK_IF;
+   if($LINE =~ /^(Po[0-9]|Eth)/) {
+    ($IF,$VLANS) = split(/\s+/,$LINE,2);
+    $TRUNK_IF=$IF;
+   } else {
+    $IF=$TRUNK_IF;
+    $VLANS=$LINE;
+   }
+   unless(exists($IF_DATA->{$IF})) { $IF_DATA->{$IF}={}; }
+   unless(exists($IF_DATA->{$IF}->{"TRUNK"})) {
+     $IF_DATA->{$IF}->{"VLANS"} = $VLANS;
+   } else {
+     $IF_DATA->{$IF}->{"VLANS"} .= $VLANS;
+   }
+   return "";
+ },
+ "OPT_FEED_IF_TRUNK" => sub{
+   my($DEVIP,$HNAME,$CLASS,$LINE) = @_;
+   my($IF,$NATIVE,$VLANS,$PT);
+   my $OUTPUT = "";
+   foreach $IF (sort portSort keys %$IF_DATA) {
+     $PT = $IF_DATA->{$IF};
+     $NATIVE = nowhite($PT->{"NATIVE"});
+     $VLANS  = nowhite($PT->{"VLANS"});
+     $OUTPUT .= "${DEVIP};${HNAME};IF_TRUNK;${IF};${NATIVE};;${VLANS}\n";
+   }
+   return $OUTPUT;
+ },
+ "RAW_C3750_IF_TRUNK" => sub {
+   my($DEVIP,$HNAME,$CLASS,$LINE) = @_;
+   our $RAW_IF;
+   our $RAW_NATIVE;
+   our $RAW_VLANS;
+   our $RAW_TRUNK;
+   my $WASTE;
+   if($LINE =~ /^Name:/) {
+     ($WASTE,$RAW_IF) = split(/\s+/,$LINE,2);
+     return "";
+   }
+   if($LINE =~ /^Operational Mode:/) {
+     $RAW_TRUNK=$LINE; $RAW_TRUNK=~s/^.*://;
+     return "";
+   }
+   if($LINE =~ /^Trunking Native Mode VLAN:/) {
+     $RAW_NATIVE=$LINE; $RAW_NATIVE=~s/^.*: //;
+     $RAW_NATIVE=~s/[^0-9]//g;
+     return "";
+   }
+   if($LINE =~ /Trunking VLANs Enabled:/) {
+     $RAW_VLANS = $LINE; $RAW_VLANS =~s/^.*: //;
+     unless($RAW_TRUNK =~ "trunk") { return ""; }
+     return "${DEVIP};${HNAME};IF_TRUNK;${RAW_IF};${RAW_NATIVE};;${RAW_VLANS}\n";
+   }
+ }
+}; # --- End of $TSIF_BASE ---
+
 
 ####################################################################### }}} 1
 ## tshoot / Main ###################################################### {{{ 1
