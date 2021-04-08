@@ -5,7 +5,7 @@ package TSIF;
 ## MANUAL ############################################################# {{{ 1
 
 
-our $VERSION = 2021.021601;
+our $VERSION = 2021.040701;
 our $MANUAL  = <<__MANUAL__;
 NAME: SSH / TSIF Hello variant _A
 FILE: TSIF.pm
@@ -22,12 +22,18 @@ __MANUAL__
 
 
 ####################################################################### }}} 1
-## DECLARATIONs ####################################################### {{{ 1
+## PACKAGEs import #################################################### {{{ 1
 
 use Socket;
 use IPC::Open3;
 use PWA;
 use Exporter;
+our $PACKAGE_NET_TELNET_CISCO = 0;
+eval('use Net::Telnet::Cisco; $PACKAGE_NET_TELNET_CISCO=1;');
+
+
+####################################################################### }}} 1
+## PACKAGE API ######################################################## {{{ 1
 
 our @ISA = qw( Exporter PWA );
 our @EXPORT = qw(
@@ -40,6 +46,8 @@ our @EXPORT = qw(
   pwaPassword
 
   xresolve
+  includeText
+  excludeText
 
   oneLine
   singleLinedConfig
@@ -49,6 +57,8 @@ our @EXPORT = qw(
 
   sshExec
   sshExecCisco
+  sshExecRaw
+  telnetExec 
   rawList2Cmd
   raw2Csv
   raw2Instant
@@ -75,6 +85,9 @@ our @EXPORT = qw(
   $TSIF_BASE
 );
 
+####################################################################### }}} 1
+## DECLARATIONs ####################################################### {{{ 1
+
 our $CLASS_MARKER = "##!exit logout :CLASS_ID:";
 our $CLASS_PREFIX = "##! CLASS_ID=";
 our  $HOST_PREFIX = "##! HOST=";
@@ -82,6 +95,7 @@ our  $HOST_PREFIX = "##! HOST=";
 our $HOSTLIST     = ""; # List of fully qualified / discovered network devices (example bellow)
 our $IF_DATA   = {}; # interface name => interface attribute class => interface data ...big structure
 our $TSIF_BASE = {}; # RAW_CLASS => sub($$$$$) { data line handling procedure ... }, ... used by raw2Instant() function
+our $TSIF_BASE_GLOBAL = $TSIF_BASE; # used once in raw2Instant as default value if TSIF_BASE parameter has not been defined. 
 
 # used by $TSIF_BASE subRoutines
 our $ACTROUTE = ""; # ip route network
@@ -100,6 +114,7 @@ sub xresolve($;$) {
   my ($PAR1,$PAR2)=@_;
   my ($DEVIP,$HNAME);
 
+  unless($PAR2) { $PAR2=""; }
   # handling input parameters
   if(length($PAR2)) {
    ($DEVIP,$HNAME) = ($PAR1,$PAR2);
@@ -132,6 +147,28 @@ sub xresolve($;$) {
   }
   return ($DEVIP,$HNAME);
 }
+
+####################################################################### }}} 1
+## sub includeText / excludeText ###################################### {{{ 1
+
+# grep on single string
+sub includeText($$){
+  my($REGEX,$TEXT)=@_;
+  return map { $A=$_;
+               if($A =~ /${REGEX}/) { $A."\n"}
+               else { "" }
+             } split(/\n/,$TEXT);
+}
+
+# grep -v on single string
+sub excludeText($$){
+  my($REGEX,$TEXT)=@_;
+  return map { $A=$_;
+               unless($A =~ /${REGEX}/) { $A."\n"}
+               else { "" }
+             } split(/\n/,$TEXT);
+}
+
 
 ####################################################################### }}} 1
 ## sub oneLine / singleLinedConfig #################################### {{{ 1
@@ -269,6 +306,99 @@ sub sshExec($$$;$) {
   my($pid,$fh_in,$fh_out,$fh_err);
   my($DEVIP,$HNAME);
 
+  unless($PROMPT) { $PROMPT=""; }
+  # prefixes for common network platforms
+  if($PROMPT eq "any")   { $PROMPT = '\S+[>#$]'; }
+  if($PROMPT eq "cisco") { $PROMPT = $HOST . '(-NEW)?[>#]'; }
+  if($PROMPT eq "junos") { $PROMPT = '[-0-9a-z]+\@' . $HOST . '(-NEW)?[>#$]\s*'; }
+  if($PROMPT eq "f5")    { $PROMPT = '[-0-9a-z]+\@\(' . $HOST . '.*\(tmos\)\s*#\s*'; }
+  if($PROMPT eq "tmos")  { $PROMPT = '[-0-9a-z]+\@\(' . $HOST . '.*\(tmos\)\s*#\s*'; }
+  if($PROMPT eq "bigip") { $PROMPT = '[-0-9a-z]+\@\(' . $HOST . '.*\(tmos\)\s*#\s*'; }
+  unless($PROMPT) { $PROMPT = '([-0-9a-z]+\@)?' . $HOST . '(-NEW)?[>#$]\s*'; }
+
+  # no login, no session :-) 
+  unless(pwaLogin($CRED)) {
+    warn "#! Warning: None credentials '${CRED}' found !\n'";
+    return "";
+  }
+
+  # no host, no session
+  unless($HOST) {
+    warn "#! Warning: None HOST '${HOST}' found !\n";
+    return "";
+  }
+  ($DEVIP,$HNAME) = xresolve($HOST);
+
+  # SSH session created via pipe into command-line ssh utility
+  # .... Net::SSH2 whould be better, but .......... no comment.
+
+  $pid=open3($fh_in,$fh_out,$fh_err,
+       "sshpass -p " .pwaPassword($CRED)." ssh -tt "
+     . " -o StrictHostKeyChecking=no"
+     . " -o PubKeyAuthentication=no"
+     . " -l " .pwaLogin($CRED). " ${HOST}");
+  unless($pid) {
+    warn "#! Warning: SSH connection failed !\n";
+    return "";
+  }
+
+  # pushing all commands into ssh utility process
+  sleep(2);
+  print $fh_in $COMMAND;
+  close $fh_in;
+
+  # pulling errors if any
+  my @OUTE=();
+  if($fh_err) {
+    @OUTE = <$fh_err>;
+    close $fh_err;
+    if(scalar(@OUTE)) {
+      @OUTE = map { $A=$_;
+                    sprintf("##! ERR=%s\n",$A);
+                  } @OUTE;
+    }
+  }
+  
+  # pulling regular output from SSH session
+  my $FFLAG=0;
+  my @OUTA=<$fh_out>;
+  close $fh_out;
+  # dispatching process from processlist (otherwise a zombie will remain)
+  waitpid($pid,0);
+
+  # transforming output into RAW preTSIF format
+  #print @OUTA; # DEBUG
+  @OUTA = map { $A=$_;
+                chomp $A;
+                $A =~ s/\x0d//g; # filters out ^M from whole line
+                if($A =~ /^${PROMPT}.*${CLASS_MARKER}/) {
+                  $A =~ s/^.*${CLASS_MARKER}/${CLASS_PREFIX}/;
+                }
+                if($A =~ /^${PROMPT}/) {
+                   $FFLAG = 1; $A="#> ${A}";
+                }
+                unless($FFLAG) { $A=""; }
+                else { $A="${A}\n"; }
+                #$A="${A}\n"; 
+                sprintf("%s",$A);
+              } @OUTA;
+  
+  # returning output with some distinguishers and errors (preTSIF RAW format)
+  return "${HOST_PREFIX}${HOST} DEVIP=${DEVIP} HNAME=${HNAME}\n" . join("",@OUTA,@OUTE);
+}
+
+# sshExec for one command on Cisco devices
+sub sshExecCisco($$$;$) {
+  my($HOST,$CRED,$COMMAND,$PROMPT)=@_;
+  $COMMAND = "terminal length 0\n" . $COMMAND . "\nexit\nexit\n";
+  return sshExec($HOST,$CRED,$COMMAND,$PROMPT);
+}
+
+sub sshExecRaw($$$;$) {
+  my($HOST,$CRED,$COMMAND,$PROMPT)=@_;
+  my($pid,$fh_in,$fh_out,$fh_err);
+  my($DEVIP,$HNAME);
+
   # prefixes for common network platforms
   if($PROMPT eq "any")   { $PROMPT = '\S+[>#$]'; }
   if($PROMPT eq "cisco") { $PROMPT = $HOST . '(-NEW)?[>#]'; }
@@ -330,27 +460,57 @@ sub sshExec($$$;$) {
   @OUTA = map { $A=$_;
                 chomp $A;
                 $A =~ s/\x0d//g; # filters out ^M from whole line
-                if($A =~ /^${PROMPT}.*${CLASS_MARKER}/) {
-                  $A =~ s/^.*${CLASS_MARKER}/${CLASS_PREFIX}/;
-                }
-                if($A =~ /^${PROMPT}/) {
-                   $FFLAG = 1; $A="#> ${A}";
-                }
-                unless($FFLAG) { $A=""; }
-                else { $A="${A}\n"; }
-                #$A="${A}\n"; 
+                $A="${A}\n"; 
                 sprintf("%s",$A);
               } @OUTA;
+  
   # returning output with some distinguishers and errors (preTSIF RAW format)
   return "${HOST_PREFIX}${HOST} DEVIP=${DEVIP} HNAME=${HNAME}\n" . join("",@OUTA,@OUTE);
 }
+####################################################################### }}} 1
+## sub telnetExec ##################################################### {{{ 1
 
-# sshExec for one command on Cisco devices
-sub sshExecCisco($$$;$) {
+sub telnetExec($$$;$) {
   my($HOST,$CRED,$COMMAND,$PROMPT)=@_;
-  $COMMAND = "terminal length 0\n" . $COMMAND . "\nexit\nexit\n";
-  return sshExec($HOST,$CRED,$COMMAND,$PROMPT);
+  unless($PACKAGE_NET_TELNET_CISCO) {
+    return "#! Error: Missing package Net::Telnet::Cisco\n";
+  }
+  my $dev = Net::Telnet::Cisco->new(Host=>$HOST);
+  unless($dev) { return ""; }
+  unless($dev->login(pwaLogin($CRED),pwaPassword($CRED))) { return ""; }
+  my @OUTA = ();
+  my @OUTX = ();
+  my $CMD;
+
+  unless($PROMPT) {
+    if($HOST =~ /^[0-9]+(\.[0-9]+)$/) {
+      my $DAT=inet_aton($HOST);
+      my $FQDN=gethostbyaddr($DAT,AF_INET);
+      my $HNAME = $FQDN;
+      $HNAME =~ s/\..*//;
+      $HNAME = uc $HNAME;
+      if($HNAME =~ /[0-9A-Z]/) { $PROMPT = "${HNAME}#"; }
+      else { $PROMPT = "${HOST}#"; }
+    } else { $PROMPT = "${HOST}#"; }
+
+  }
+
+
+  foreach $CMD (split(/\n/,$COMMAND)) {
+    if($CMD =~ /^\s*#/) { push @OUTA,"${CMD}\n"; next; }
+    if($CMD =~ /^\s*$/) { push @OUTA,"${CMD}\n"; next; }
+    last if $CMD =~ /^exit$/;
+    push @OUTA,"#> ${PROMPT} ${CMD}\n";
+    #@OUTX = $dev->cmd($CMD);
+    #@OUTX = map { my $A=$_; chomp $A; "${A}\n"; } @OUTX;
+    #push(@OUTA,@OUTX);
+    push @OUTA, map { my $A=$_; chomp $A; "${A}\n"; } $dev->cmd($CMD);
+  }
+  $dev->close();
+  #print @OUTA; #DEBUG
+  return join("",@OUTA);
 }
+
 
 ####################################################################### }}} 1
 ## sub rawList2Cmd #################################################### {{{ 1
@@ -459,7 +619,7 @@ sub raw4Empty($$$$) {
 }
 
 
-sub raw2Instant($$;$) {
+sub raw2Instant($;$$) {
   my ($INPUT_TEXT,$TSIF_BASE,$OPT) = @_;
   my ($HOST,$DEVIP,$HNAME) = ("","","");
   my $CLASS = "CUT_HEAD";
@@ -468,6 +628,9 @@ sub raw2Instant($$;$) {
   my $METHOD = sub {};
   my $OUTPUT_TEXT = "";
   my $DEFAULT_METHOD = \&raw4Default;
+
+  unless($TSIF_BASE) { $TSIF_BASE = $TSIF_BASE_GLOBAL; }
+  unless($OPT)       { $OPT = "unknown"; }
 
   if($OPT eq "unknown") { 
     $DEFAULT_METHOD = \&raw4Unknown;
@@ -557,7 +720,8 @@ __RAW__
 # of the single line string
 sub nowhite($) {
   my $TEXT = shift;
-  if($TEXT eq undef) { return ""; }
+  #if($TEXT eq undef) { return ""; }
+  unless($TEXT) { return ""; }
   $TEXT =~ s/^\s+//;
   $TEXT =~ s/\s+$//;
   return $TEXT;
@@ -909,7 +1073,7 @@ our $TSIF_BASE = {
    }
  }
 }; # --- End of $TSIF_BASE ---
-
+$TSIF_BASE_GLOBAL = $TSIF_BASE; # update $TSIF_BASE_GLOBAL by true value
 
 ####################################################################### }}} 1
 ## tshoot / Main ###################################################### {{{ 1
